@@ -1,6 +1,33 @@
 #!/usr/bin/env python3
+import sys
+import os.path
+from time import time, sleep, localtime, strftime
+from colorama import init as colorama_init
+from colorama import Fore, Back, Style
+import argparse
+from configparser import ConfigParser
+import sdnotify
+from unidecode import unidecode
 from pyLoraRFM9x import LoRa, ModemConfig
 import paho.mqtt.client as mqtt
+
+project_name = 'Lora2mqtt gateway Client/Daemon'
+project_url = 'https://github.com/ovenystas/lora2mqtt'
+
+# Argparse
+parser = argparse.ArgumentParser(description=project_name, epilog='For further details see: ' + project_url)
+parser.add_argument('--config_dir', help='set directory where config.ini is located', default=sys.path[0])
+parse_args = parser.parse_args()
+
+# Intro
+colorama_init()
+print(Fore.GREEN + Style.BRIGHT)
+print(project_name)
+print('Source:', project_url)
+print(Style.RESET_ALL)
+
+# Systemd Service Notifications - https://github.com/bb4242/sdnotify
+sd_notifier = sdnotify.SystemdNotifier()
 
 # Logging function
 def print_line(text, error = False, warning=False, sd_notify=False, console=True):
@@ -14,7 +41,7 @@ def print_line(text, error = False, warning=False, sd_notify=False, console=True
             print(Fore.GREEN + f'[{timestamp}] ' + Style.RESET_ALL + f'{text}' + Style.RESET_ALL)
     timestamp_sd = strftime('%b %d %H:%M:%S', localtime())
     if sd_notify:
-        sd_notifier.notify(f'STATUS={timestamp_sd} - {unidecode(text)}.'))
+        sd_notifier.notify(f'STATUS={timestamp_sd} - {unidecode(text)}.')
 
 # Eclipse Paho callbacks - http://www.eclipse.org/paho/clients/python/docs/#callbacks
 def on_connect(client, userdata, flags, rc):
@@ -30,16 +57,49 @@ def on_publish(client, userdata, mid):
     print_line('Data successfully published.')
     pass
 
+# Load configuration file
+config_dir = parse_args.config_dir
+
+config = ConfigParser(delimiters=('=', ), inline_comment_prefixes=('#'))
+config.optionxform = str
+try:
+    with open(os.path.join(config_dir, 'config.ini')) as config_file:
+        config.read_file(config_file)
+except IOError:
+    print_line('No configuration file "config.ini"', error=True, sd_notify=True)
+    sys.exit(1)
+
+reporting_mode = config['General'].get('reporting_method', 'mqtt-json')
+used_adapter = config['General'].get('adapter', 'hci0')
+daemon_enabled = config['Daemon'].getboolean('enabled', True)
+
+if reporting_mode == 'homeassistant-mqtt':
+    default_base_topic = 'homeassistant'
+
+base_topic = config['MQTT'].get('base_topic', default_base_topic).lower()
+sleep_period = config['Daemon'].getint('period', 300)
+miflora_cache_timeout = sleep_period - 1
+
+# Check configuration
+if reporting_mode not in ['homeassistant-mqtt']:
+    print_line('Configuration parameter reporting_mode set to an invalid value', error=True, sd_notify=True)
+    sys.exit(1)
+if not config['Sensors']:
+    print_line('No sensors found in configuration file "config.ini"', error=True, sd_notify=True)
+    sys.exit(1)
+
+
+print_line('Configuration accepted', console=False, sd_notify=True)
+
+
+reporting_mode = 'homeassistant-mqtt'
+
 # MQTT connection
 if reporting_mode == 'homeassistant-mqtt':
     print_line('Connecting to MQTT broker ...')
     mqtt_client = mqtt.Client()
     mqtt_client.on_connect = on_connect
     mqtt_client.on_publish = on_publish
-    if reporting_mode == 'mqtt-json':
-        mqtt_client.will_set('{}/$announce'.format(base_topic), payload='{}', retain=True)
-    elif reporting_mode == 'mqtt-smarthome':
-        mqtt_client.will_set('{}/connected'.format(base_topic), payload='0', retain=True)
 
     if config['MQTT'].getboolean('tls', False):
         # According to the docs, setting PROTOCOL_SSLv23 "Selects the highest protocol version
@@ -64,23 +124,17 @@ if reporting_mode == 'homeassistant-mqtt':
     except:
         print_line('MQTT connection error. Please check your settings in the configuration file "config.ini"', error=True, sd_notify=True)
         sys.exit(1)
-    else:
-        if reporting_mode == 'mqtt-smarthome':
-            mqtt_client.publish('{}/connected'.format(base_topic), payload='1', retain=True)
-        if reporting_mode != 'thingsboard-json':
-            mqtt_client.loop_start()
-            sleep(1.0) # some slack to establish the connection
 
 # Discovery Announcement
 if reporting_mode == 'homeassistant-mqtt':
     print_line('Announcing Mi Flora devices to MQTT broker for auto-discovery ...')
     for [flora_name, flora] in flores.items():
-        state_topic = f'{base_topic}/sensor/{flora_name.lower()}/state')
+        state_topic = f'{base_topic}/sensor/{flora_name.lower()}/state'
         for [sensor, params] in parameters.items():
-            discovery_topic = f'homeassistant/sensor/{flora_name.lower()}/{sensor}/config')
+            discovery_topic = f'homeassistant/sensor/{flora_name.lower()}/{sensor}/config'
             payload = OrderedDict()
-            payload['name'] = f"{flora_name} {sensor.title()}")
-            payload['unique_id'] = f"{flora['mac'].lower().replace(':', '')}-{sensor}")
+            payload['name'] = f"{flora_name} {sensor.title()}"
+            payload['unique_id'] = f"{flora['mac'].lower().replace(':', '')}-{sensor}"
             payload['unit_of_measurement'] = params['unit']
             if 'device_class' in params:
                 payload['device_class'] = params['device_class']
