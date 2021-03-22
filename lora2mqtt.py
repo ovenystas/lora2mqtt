@@ -11,6 +11,82 @@ from unidecode import unidecode
 from pyLoraRFM9x import LoRa, ModemConfig
 import paho.mqtt.client as mqtt
 
+
+class Cover:
+  # From https://www.home-assistant.io/integrations/cover/ at 2021-03-21
+  deviceClassName = (
+    "none",
+    "awning",
+    "blind",
+    "curtain",
+    "damper",
+    "door",
+    "garage",
+    "gate",
+    "shade",
+    "shutter",
+    "window"
+  )
+
+
+class BinarySensor:
+  # From https://www.home-assistant.io/integrations/binary_sensor/ at 2021-03-21
+  deviceClassName = (
+    "none",
+    "battery",
+    "battery_charging",
+    "cold",
+    "connectivity",
+    "door",
+    "garage_door",
+    "gas",
+    "heat",
+    "light",
+    "lock",
+    "moisture",
+    "motion",
+    "moving",
+    "occupancy",
+    "opening",
+    "plug",
+    "power",
+    "presence",
+    "problem",
+    "safety",
+    "smoke",
+    "sound",
+    "vibration",
+    "window"
+  )
+
+
+class Sensor:
+  # From https://www.home-assistant.io/integrations/sensor/ at 2021-03-21
+  deviceClassName = (
+    "none",
+    "battery",
+    "current",
+    "energy",
+    "humidity",
+    "illuminance",
+    "signal_strength",
+    "temperature",
+    "power",
+    "power_factor",
+    "pressure",
+    "timestamp",
+    "voltage"
+  )
+
+
+class Component:
+  name = [
+    "binary_sensor",
+    "sensor",
+    "cover"
+  ]
+
+
 project_name = 'Lora2mqtt gateway Client/Daemon'
 project_url = 'https://github.com/ovenystas/lora2mqtt'
 
@@ -77,15 +153,13 @@ if reporting_mode == 'homeassistant-mqtt':
     default_base_topic = 'homeassistant'
 
 base_topic = config['MQTT'].get('base_topic', default_base_topic).lower()
+discovery_prefix = config['MQTT'].get('discovery_prefix', default_base_topic).lower()
 sleep_period = config['Daemon'].getint('period', 300)
 miflora_cache_timeout = sleep_period - 1
 
 # Check configuration
 if reporting_mode not in ['homeassistant-mqtt']:
     print_line('Configuration parameter reporting_mode set to an invalid value', error=True, sd_notify=True)
-    sys.exit(1)
-if not config['Sensors']:
-    print_line('No sensors found in configuration file "config.ini"', error=True, sd_notify=True)
     sys.exit(1)
 
 
@@ -125,29 +199,22 @@ if reporting_mode == 'homeassistant-mqtt':
         print_line('MQTT connection error. Please check your settings in the configuration file "config.ini"', error=True, sd_notify=True)
         sys.exit(1)
 
+open('devices.json') as json_file:
+devices = json.load(json_file)
+
 # Discovery Announcement
 if reporting_mode == 'homeassistant-mqtt':
-    print_line('Announcing Mi Flora devices to MQTT broker for auto-discovery ...')
-    for [flora_name, flora] in flores.items():
-        state_topic = f'{base_topic}/sensor/{flora_name.lower()}/state'
+    print_line('Announcing LoRa devices to MQTT broker for auto-discovery ...')
+    for node in devices['devices']:
+        state_topic = f'{base_topic}/sensor/{node}/state'
         for [sensor, params] in parameters.items():
-            discovery_topic = f'homeassistant/sensor/{flora_name.lower()}/{sensor}/config'
+            discovery_topic = f'{discovery_prefix}/sensor/{flora_name.lower()}/{sensor}/config'
             payload = OrderedDict()
             payload['name'] = f"{flora_name} {sensor.title()}"
-            payload['unique_id'] = f"{flora['mac'].lower().replace(':', '')}-{sensor}"
             payload['unit_of_measurement'] = params['unit']
             if 'device_class' in params:
                 payload['device_class'] = params['device_class']
             payload['state_topic'] = state_topic
-            payload['value_template'] = f"{{{{ value_json.{sensor} }}}}"
-            payload['device'] = {
-                    'identifiers' : [f"MiFlora{flora['mac'].lower().replace(':', '')}"],
-                    'connections' : [["mac", flora['mac'].lower()]],
-                    'manufacturer' : 'Xiaomi',
-                    'name' : flora_name,
-                    'model' : 'MiFlora Plant Sensor (HHCCJCY01)',
-                    'sw_version': flora['firmware']
-            }
             mqtt_client.publish(discovery_topic, json.dumps(payload), 1, True)
 
 print_line('Initialization complete, starting MQTT publish loop', console=False, sd_notify=True)
@@ -159,8 +226,8 @@ def on_recv(payload):
     print("RSSI: {}; SNR: {}".format(payload.rssi, payload.snr))
 
 # Use chip select 1. GPIO pin 5 will be used for interrupts and set reset pin to 25
-# The address of this device will be set to 2
-lora = LoRa(channel=1, interrupt=24, this_address=2, reset_pin=25,
+# The address of this device will be set to 0
+lora = LoRa(channel=1, interrupt=24, this_address=0, reset_pin=25,
             modem_config=ModemConfig.Bw125Cr45Sf128, freq=868, tx_power=14,
             acks=True)
 
