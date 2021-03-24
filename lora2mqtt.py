@@ -10,6 +10,14 @@ import sdnotify
 from unidecode import unidecode
 from pyLoraRFM9x import LoRa, ModemConfig
 import paho.mqtt.client as mqtt
+import json
+
+
+project_name = 'Lora2mqtt gateway Client/Daemon'
+project_url = 'https://github.com/ovenystas/lora2mqtt'
+
+config = None
+devices = None
 
 
 class Cover:
@@ -87,93 +95,101 @@ class Component:
   ]
 
 
-project_name = 'Lora2mqtt gateway Client/Daemon'
-project_url = 'https://github.com/ovenystas/lora2mqtt'
+def parse_arguments():
+    parser = argparse.ArgumentParser(description=project_name, epilog='For further details see: ' + project_url)
+    parser.add_argument('--config_dir', help='set directory where config.ini is located', default=sys.path[0])
+    parsed_args = parser.parse_args()
+    return parsed_args
 
-# Argparse
-parser = argparse.ArgumentParser(description=project_name, epilog='For further details see: ' + project_url)
-parser.add_argument('--config_dir', help='set directory where config.ini is located', default=sys.path[0])
-parse_args = parser.parse_args()
 
-# Intro
-colorama_init()
-print(Fore.GREEN + Style.BRIGHT)
-print(project_name)
-print('Source:', project_url)
-print(Style.RESET_ALL)
+def print_intro():
+    print(Fore.GREEN + Style.BRIGHT)
+    print(project_name)
+    print('Source:', project_url)
+    print(Style.RESET_ALL)
 
-# Systemd Service Notifications - https://github.com/bb4242/sdnotify
-sd_notifier = sdnotify.SystemdNotifier()
 
-# Logging function
-def print_line(text, error = False, warning=False, sd_notify=False, console=True):
-    timestamp = strftime('%Y-%m-%d %H:%M:%S', localtime())
-    if console:
-        if error:
-            print(Fore.RED + Style.BRIGHT + f'[{timestamp}] ' + Style.RESET_ALL + f'{text}' + Style.RESET_ALL, file=sys.stderr)
-        elif warning:
-            print(Fore.YELLOW + f'[{timestamp}] ' + Style.RESET_ALL + f'{text}' + Style.RESET_ALL)
-        else:
-            print(Fore.GREEN + f'[{timestamp}] ' + Style.RESET_ALL + f'{text}' + Style.RESET_ALL)
-    timestamp_sd = strftime('%b %d %H:%M:%S', localtime())
-    if sd_notify:
-        sd_notifier.notify(f'STATUS={timestamp_sd} - {unidecode(text)}.')
+class Log:
 
-# Eclipse Paho callbacks - http://www.eclipse.org/paho/clients/python/docs/#callbacks
-def on_connect(client, userdata, flags, rc):
+    def __init__(self):
+        self.sd_notifier = sdnotify.SystemdNotifier()
+
+
+    def print(self, text, error=False, warning=False, sd_notify=False, console=True):
+        ''' 
+        Logging function
+        '''
+        local_time = localtime()
+
+        if console:
+            timestamp = strftime('%Y-%m-%d %H:%M:%S', local_time)
+            if error:
+                print(f'{Fore.RED}{Style.BRIGHT}[{timestamp}] {Style.RESET_ALL}{text}{Style.RESET_ALL}', file=sys.stderr)
+            elif warning:
+                print(f'{Fore.YELLOW}[{timestamp}] {Style.RESET_ALL}{text}{Style.RESET_ALL}')
+            else:
+                print(f'{Fore.GREEN}[{timestamp}] {Style.RESET_ALL}{text}{Style.RESET_ALL}')
+
+        if sd_notify:
+            timestamp_sd = strftime('%b %d %H:%M:%S', local_time)
+            self.sd_notifier.notify(f'STATUS={timestamp_sd} - {unidecode(text)}.')
+
+
+def on_mqtt_connect(client, userdata, flags, rc):
+    '''
+    Eclipse Paho callback on MQTT connection - http://www.eclipse.org/paho/clients/python/docs/#callbacks
+    '''
     if rc == 0:
-        print_line('MQTT connection established', console=True, sd_notify=True)
+        log.print('MQTT connection established', console=True, sd_notify=True)
         print()
     else:
-        print_line(f'Connection error with result code {str(rc)} - {mqtt.connack_string(rc)}', error=True)
+        log.print(f'Connection error with result code {str(rc)} - {mqtt.connack_string(rc)}', error=True)
         #kill main thread
         os._exit(1)
 
-def on_publish(client, userdata, mid):
+
+def on_mqtt_publish(client, userdata, mid):
+    '''
+    Eclipse Paho callback on MQTT publish - http://www.eclipse.org/paho/clients/python/docs/#callbacks
+    '''
     print_line('Data successfully published.')
-    pass
-
-# Load configuration file
-config_dir = parse_args.config_dir
-
-config = ConfigParser(delimiters=('=', ), inline_comment_prefixes=('#'))
-config.optionxform = str
-try:
-    with open(os.path.join(config_dir, 'config.ini')) as config_file:
-        config.read_file(config_file)
-except IOError:
-    print_line('No configuration file "config.ini"', error=True, sd_notify=True)
-    sys.exit(1)
-
-reporting_mode = config['General'].get('reporting_method', 'mqtt-json')
-used_adapter = config['General'].get('adapter', 'hci0')
-daemon_enabled = config['Daemon'].getboolean('enabled', True)
-
-if reporting_mode == 'homeassistant-mqtt':
-    default_base_topic = 'homeassistant'
-
-base_topic = config['MQTT'].get('base_topic', default_base_topic).lower()
-discovery_prefix = config['MQTT'].get('discovery_prefix', default_base_topic).lower()
-sleep_period = config['Daemon'].getint('period', 300)
-miflora_cache_timeout = sleep_period - 1
-
-# Check configuration
-if reporting_mode not in ['homeassistant-mqtt']:
-    print_line('Configuration parameter reporting_mode set to an invalid value', error=True, sd_notify=True)
-    sys.exit(1)
 
 
-print_line('Configuration accepted', console=False, sd_notify=True)
+def load_configuration(config_dir):
+    '''
+    Load configuration file
+    '''
+    global config
+    config = ConfigParser(delimiters=('=', ), inline_comment_prefixes=('#'))
+    config.optionxform = str
+    try:
+        with open(os.path.join(config_dir, 'config.ini')) as config_file:
+            config.read_file(config_file)
+    except IOError:
+        log.print('No configuration file "config.ini"', error=True, sd_notify=True)
+        sys.exit(1)
+
+    config['Daemon']['enabled'] = config['Daemon'].get('enabled', 'True')
+    config['MQTT']['base_topic'] = config['MQTT'].get('base_topic', 'lora2mqtt').lower()
+    config['MQTT']['discovery_prefix'] = config['MQTT'].get('discovery_prefix', 'homeassistant').lower()
+    config['Daemon']['period'] = config['Daemon'].get('period', '300')
 
 
-reporting_mode = 'homeassistant-mqtt'
+def check_configuration():
+    '''
+    Check configuration
+    '''
+    log.print('Configuration accepted', console=False, sd_notify=True)
 
-# MQTT connection
-if reporting_mode == 'homeassistant-mqtt':
-    print_line('Connecting to MQTT broker ...')
+
+def mqtt_connect():
+    '''
+    MQTT connection
+    '''
+    log.print('Connecting to MQTT broker ...')
     mqtt_client = mqtt.Client()
-    mqtt_client.on_connect = on_connect
-    mqtt_client.on_publish = on_publish
+    mqtt_client.on_connect = on_mqtt_connect
+    mqtt_client.on_publish = on_mqtt_publish
 
     if config['MQTT'].getboolean('tls', False):
         # According to the docs, setting PROTOCOL_SSLv23 "Selects the highest protocol version
@@ -196,15 +212,23 @@ if reporting_mode == 'homeassistant-mqtt':
                             port=int(os.environ.get('MQTT_PORT', config['MQTT'].get('port', '1883'))),
                             keepalive=config['MQTT'].getint('keepalive', 60))
     except:
-        print_line('MQTT connection error. Please check your settings in the configuration file "config.ini"', error=True, sd_notify=True)
+        log.print('MQTT connection error. Please check your settings in the configuration file "config.ini"',
+                   error=True, sd_notify=True)
         sys.exit(1)
 
-open('devices.json') as json_file:
-devices = json.load(json_file)
 
-# Discovery Announcement
-if reporting_mode == 'homeassistant-mqtt':
-    print_line('Announcing LoRa devices to MQTT broker for auto-discovery ...')
+def load_devices():
+    global devices
+    with open('devices.json') as json_file:
+        devices = json.load(json_file)
+
+
+def mqtt_discovery_announce():
+    '''
+    Discovery Announcement
+    '''
+    log.print('Announcing LoRa devices to MQTT broker for auto-discovery ...')
+    base_topic = config['MQTT'].get('base_topic')
     for node in devices['devices']:
         state_topic = f'{base_topic}/sensor/{node}/state'
         for [sensor, params] in parameters.items():
@@ -217,28 +241,61 @@ if reporting_mode == 'homeassistant-mqtt':
             payload['state_topic'] = state_topic
             mqtt_client.publish(discovery_topic, json.dumps(payload), 1, True)
 
-print_line('Initialization complete, starting MQTT publish loop', console=False, sd_notify=True)
 
-
-# This is our callback function that runs when a message is received
-def on_recv(payload):
+def on_lora_receive(payload):
+    '''
+    Callback function that runs when a LoRa message is received
+    '''
     print("From:", payload.header_from)
     print("RSSI: {}; SNR: {}".format(payload.rssi, payload.snr))
 
-# Use chip select 1. GPIO pin 5 will be used for interrupts and set reset pin to 25
-# The address of this device will be set to 0
-lora = LoRa(channel=1, interrupt=24, this_address=0, reset_pin=25,
-            modem_config=ModemConfig.Bw125Cr45Sf128, freq=868, tx_power=14,
-            acks=True)
 
-lora.on_recv = on_recv
+def lora_init():
+    '''
+    Use chip select 1. GPIO pin 5 will be used for interrupts and set reset pin to 25
+    The address of this device will be set to 0
+    '''
+    lora = LoRa(channel=1, interrupt=24, this_address=0, reset_pin=25,
+                modem_config=ModemConfig.Bw125Cr45Sf128, freq=868, tx_power=14,
+                acks=True)
 
-# Send a message to a recipient device with address 10
-# Retry sending the message twice if we don't get an  acknowledgment from the recipient
-message = "Hello there!"
-status = lora.send_to_wait(message, 10, retries=0)
+    lora.on_recv = on_lora_receive
 
-if status is True:
-    print("Message sent!")
-else:
-    print("No acknowledgment from recipient")
+
+def lora_send_hello():
+    '''
+    Send a message to a recipient device with address 10
+    Retry sending the message twice if we don't get an  acknowledgment from the recipient
+    '''
+    message = "Hello there!"
+    status = lora.send_to_wait(message, 10, retries=0)
+
+    if status is True:
+        print("LoRa message sent!")
+    else:
+        print("No ack from LoRa recipient")
+
+
+def main():
+    parsed_args = parse_arguments()
+    colorama_init()
+    print_intro()
+
+    load_configuration(parsed_args.config_dir)
+    check_configuration()
+
+    reporting_mode = 'homeassistant-mqtt'
+
+    mqtt_connect()
+    load_devices()
+    mqtt_discovery_announce()
+
+    lora_init()
+    lora_send_hello()
+
+    print_line('Initialization complete, starting MQTT publish loop', console=False, sd_notify=True)
+
+
+if __name__ == "__main__":
+    log = Log()
+    main()
