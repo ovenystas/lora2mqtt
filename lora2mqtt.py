@@ -95,11 +95,10 @@ class Component:
   ]
 
 
-def parse_arguments():
+def parse_arguments(args):
     parser = argparse.ArgumentParser(description=project_name, epilog='For further details see: ' + project_url)
     parser.add_argument('--config_dir', help='set directory where config.ini is located', default=sys.path[0])
-    parsed_args = parser.parse_args()
-    return parsed_args
+    return parser.parse_args(args)
 
 
 def print_intro():
@@ -145,14 +144,14 @@ def on_mqtt_connect(client, userdata, flags, rc):
     else:
         log.print(f'Connection error with result code {str(rc)} - {mqtt.connack_string(rc)}', error=True)
         #kill main thread
-        os._exit(1)
+        sys.exit(1)
 
 
 def on_mqtt_publish(client, userdata, mid):
     '''
     Eclipse Paho callback on MQTT publish - http://www.eclipse.org/paho/clients/python/docs/#callbacks
     '''
-    print_line('Data successfully published.')
+    log.print('Data successfully published.')
 
 
 def load_configuration(config_dir):
@@ -187,6 +186,7 @@ def mqtt_connect():
     MQTT connection
     '''
     log.print('Connecting to MQTT broker ...')
+    global mqtt_client
     mqtt_client = mqtt.Client()
     mqtt_client.on_connect = on_mqtt_connect
     mqtt_client.on_publish = on_mqtt_publish
@@ -247,7 +247,7 @@ def on_lora_receive(payload):
     Callback function that runs when a LoRa message is received
     '''
     print("From:", payload.header_from)
-    print("RSSI: {}; SNR: {}".format(payload.rssi, payload.snr))
+    print(f"RSSI: {payload.rssi}; SNR: {payload.snr}")
 
 
 def lora_init():
@@ -255,6 +255,7 @@ def lora_init():
     Use chip select 1. GPIO pin 5 will be used for interrupts and set reset pin to 25
     The address of this device will be set to 0
     '''
+    global lora
     lora = LoRa(channel=1, interrupt=24, this_address=0, reset_pin=25,
                 modem_config=ModemConfig.Bw125Cr45Sf128, freq=868, tx_power=14,
                 acks=True)
@@ -277,7 +278,7 @@ def lora_send_hello():
 
 
 def main():
-    parsed_args = parse_arguments()
+    parsed_args = parse_arguments(sys.argv[1:])
     colorama_init()
     print_intro()
 
@@ -293,7 +294,7 @@ def main():
     lora_init()
     lora_send_hello()
 
-    print_line('Initialization complete, starting MQTT publish loop', console=False, sd_notify=True)
+    log.print('Initialization complete, starting MQTT publish loop', console=False, sd_notify=True)
 
 
 if __name__ == "__main__":
