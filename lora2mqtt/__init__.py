@@ -13,8 +13,8 @@ import paho.mqtt.client as mqtt
 import json
 
 
-project_name = "Lora2mqtt gateway Client/Daemon"
-project_url = "https://github.com/ovenystas/lora2mqtt"
+PROJECT_NAME = "Lora2mqtt gateway Client/Daemon"
+PROJECT_URL = "https://github.com/ovenystas/lora2mqtt"
 
 config = None
 devices = None
@@ -93,7 +93,7 @@ class Component:
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description=project_name, epilog="For further details see: " + project_url
+        description=PROJECT_NAME, epilog="For further details see: " + PROJECT_URL
     )
     parser.add_argument(
         "--config_dir",
@@ -106,8 +106,8 @@ def parse_arguments():
 
 def print_intro():
     print(Fore.GREEN + Style.BRIGHT)
-    print(project_name)
-    print("Source:", project_url)
+    print(PROJECT_NAME)
+    print("Source:", PROJECT_URL)
     print(Style.RESET_ALL)
 
 
