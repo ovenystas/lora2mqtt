@@ -3,7 +3,7 @@ import sys
 import os.path
 from time import time, sleep, localtime, strftime
 from colorama import init as colorama_init
-from colorama import Fore, Back, Style
+from colorama import Fore, Style
 import argparse
 from configparser import ConfigParser
 import sdnotify
