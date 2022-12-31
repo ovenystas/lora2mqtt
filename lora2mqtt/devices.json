@@ -1,0 +1,23 @@
+{
+  "devices": [
+    { "nodeId": 0, "name": "Lora2MQTT" },
+    {
+      "nodeId": 1,
+      "name": "Garagesensor",
+      "location": "Garage",
+      "entities": [
+        {
+          "component": "sensor",
+          "objectId": "temperature_air",
+          "config": {
+            "device_class": "temperature",
+            "unit_of_measurement": "°C",
+            "state_topic": "lora2mqtt/Garage/Garagesensor/temperature_air",
+            "name": "Garage-Garagesensor_temperature_air"
+          }
+        }
+      ]
+    },
+    { "nodeId": 2, "name": "Garage-Brevlada" }
+  ]
+}
