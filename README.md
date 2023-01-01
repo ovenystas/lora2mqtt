@@ -52,11 +52,11 @@ pre-commit run --all-files
 ### Run unit tests
 
 ```bash
-pytest -s tests/unit
+python3 -m pytest
 ```
 
 ### Run integration tests
 
 ```bash
-pytest -s tests/integration
+python3 -m pytest
 ```

@@ -1,4 +1,5 @@
 *.swp
 .venv/
+.vscode/
 /config.ini
 __pycache__/
