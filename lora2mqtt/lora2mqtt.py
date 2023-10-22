@@ -3,114 +3,58 @@ import sys
 import os.path
 from time import time, sleep, localtime, strftime
 import logging
-from colorama import init as colorama_init
-from colorama import Fore, Style
 import argparse
 from configparser import ConfigParser
+from collections import OrderedDict
 
 # import sdnotify
-from unidecode import unidecode
 from pyLoraRFM9x import LoRa, ModemConfig
 import paho.mqtt.client as mqtt
 import json
-from enum import Enum
+import jsonpickle
+import messages
 
 PROJECT_NAME = "Lora2mqtt gateway Client/Daemon"
+PROJECT_VERSION = "0.0.1"
 PROJECT_URL = "https://github.com/ovenystas/lora2mqtt"
 
 config = None
 devices = None
 lora = None
+discovery_msgs = list()
+
+mqtt_client = mqtt.Client()
+
+
+class CustomFormatter(logging.Formatter):
+    grey = "\x1b[38;20m"
+    yellow = "\x1b[33;20m"
+    red = "\x1b[31;20m"
+    bold_red = "\x1b[31;1m"
+    reset = "\x1b[0m"
+    # format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
+    format = "%(levelname)s: %(message)s (%(filename)s:%(lineno)d)"
+
+    FORMATS = {
+        logging.DEBUG: grey + format + reset,
+        logging.INFO: grey + format + reset,
+        logging.WARNING: yellow + format + reset,
+        logging.ERROR: red + format + reset,
+        logging.CRITICAL: bold_red + format + reset,
+    }
+
+    def format(self, record):
+        log_fmt = self.FORMATS.get(record.levelno)
+        formatter = logging.Formatter(log_fmt)
+        return formatter.format(record)
+
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
+console_handler.setLevel(logging.DEBUG)
+console_handler.setFormatter(CustomFormatter())
 logger.addHandler(console_handler)
-
-
-class Cover:
-    # From https://www.home-assistant.io/integrations/cover/ at 2021-03-21
-    deviceClassName = (
-        "none",
-        "awning",
-        "blind",
-        "curtain",
-        "damper",
-        "door",
-        "garage",
-        "gate",
-        "shade",
-        "shutter",
-        "window",
-    )
-
-
-class BinarySensor:
-    # From https://www.home-assistant.io/integrations/binary_sensor/ at 2021-03-21
-    deviceClassName = (
-        "none",
-        "battery",
-        "battery_charging",
-        "cold",
-        "connectivity",
-        "door",
-        "garage_door",
-        "gas",
-        "heat",
-        "light",
-        "lock",
-        "moisture",
-        "motion",
-        "moving",
-        "occupancy",
-        "opening",
-        "plug",
-        "power",
-        "presence",
-        "problem",
-        "safety",
-        "smoke",
-        "sound",
-        "vibration",
-        "window",
-    )
-
-
-class Sensor:
-    # From https://www.home-assistant.io/integrations/sensor/ at 2021-03-21
-    deviceClassName = (
-        "none",
-        "battery",
-        "current",
-        "energy",
-        "humidity",
-        "illuminance",
-        "signal_strength",
-        "temperature",
-        "power",
-        "power_factor",
-        "pressure",
-        "timestamp",
-        "voltage",
-    )
-
-
-class Component:
-    name = ["binary_sensor", "sensor", "cover"]
-
-
-class MsgType(Enum):
-    PING_REQ = 0
-    PING_MSG = 1
-    DISCOVERY_REQ = 2
-    DISCOVERY_MSG = 3
-    VALUE_REQ = 4
-    VALUE_MSG = 5
-    CONFIG_REQ = 6
-    CONFIG_MSG = 7
-    CONFIG_SET_REQ = 8
-    SERVICE_REQ = 9
 
 
 def parse_arguments():
@@ -132,37 +76,35 @@ def parse_arguments():
 
 
 def print_intro():
-    print(Fore.GREEN + Style.BRIGHT)
-    print(PROJECT_NAME)
+    print(f"{PROJECT_NAME} v{PROJECT_VERSION}")
     print("Source:", PROJECT_URL)
-    print(Style.RESET_ALL)
 
 
 def on_mqtt_connect(client, userdata, flags, rc):
     """
-    Eclipse Paho callback on MQTT connection - http://www.eclipse.org/paho/clients/python/docs/#callbacks
+    Eclipse Paho callback on MQTT connection
+    http://www.eclipse.org/paho/clients/python/docs/#callbacks
     """
     if rc == 0:
         logger.info("MQTT connection established")
-        # log.print("MQTT connection established", console=True, sd_notify=True)
-        # print()
     else:
-        logger.error(
-            f"Connection error with result code {str(rc)} - {mqtt.connack_string(rc)}"
-        )
-        # log.print(
-        #     f"Connection error with result code {str(rc)} - {mqtt.connack_string(rc)}",
-        #     error=True,
-        # )
-        # kill main thread
+        logger.error("MQTT connect error")
         os._exit(1)
+
+
+def on_mqtt_disconnect(client, userdata, rc):
+    """
+    Eclipse Paho callback on MQTT disconnection
+    http://www.eclipse.org/paho/clients/python/docs/#callbacks
+    """
+    logging.info("MQTT Disconnected with result code: %s", rc)
 
 
 def on_mqtt_publish(client, userdata, mid):
     """
     Eclipse Paho callback on MQTT publish - http://www.eclipse.org/paho/clients/python/docs/#callbacks
     """
-    print_line("Data successfully published.")
+    logger.info("MQTT Data successfully published.")
 
 
 def load_configuration(config_file_path):
@@ -176,8 +118,7 @@ def load_configuration(config_file_path):
         with open(config_file_path) as config_file:
             config.read_file(config_file)
     except OSError:
-        logger.error(f'No configuration file "{config_file_path}" found')
-        # log.print(f'No configuration file "{config_file_path}" found', error=True, sd_notify=True)
+        logger.error(f"Configuration file {config_file_path} not found")
         sys.exit(1)
 
     config["Daemon"]["enabled"] = config["Daemon"].get("enabled", "True")
@@ -193,7 +134,6 @@ def check_configuration():
     Check configuration
     """
     logger.info("Configuration accepted")
-    # log.print("Configuration accepted", console=False, sd_notify=True)
 
 
 def mqtt_connect():
@@ -201,15 +141,14 @@ def mqtt_connect():
     MQTT connection
     """
     logger.info("Connecting to MQTT broker ...")
-    # log.print("Connecting to MQTT broker ...")
-    mqtt_client = mqtt.Client()
     mqtt_client.on_connect = on_mqtt_connect
+    mqtt_client.on_disconnect = on_mqtt_disconnect
     mqtt_client.on_publish = on_mqtt_publish
 
     if config["MQTT"].getboolean("tls", False):
         # According to the docs, setting PROTOCOL_SSLv23 "Selects the highest protocol version
         # that both the client and server support. Despite the name, this option can select
-        # “TLS” protocols as well as “SSL”" - so this seems like a resonable default
+        # "TLS" protocols as well as "SSL" - so this seems like a resonable default
         mqtt_client.tls_set(
             ca_certs=config["MQTT"].get("tls_ca_cert", None),
             keyfile=config["MQTT"].get("tls_keyfile", None),
@@ -236,11 +175,6 @@ def mqtt_connect():
         logger.error(
             'MQTT connection error. Please check your settings in the configuration file "config.ini"'
         )
-        # log.print(
-        #     'MQTT connection error. Please check your settings in the configuration file "config.ini"',
-        #     error=True,
-        #     sd_notify=True,
-        # )
         sys.exit(1)
 
     logger.info("Connection established to MQTT broker")
@@ -251,32 +185,112 @@ def load_devices(devices_file_path):
     global devices
     with open(devices_file_path) as devices_file:
         devices = json.load(devices_file)
-    logger.info("Devices loaded")
+    logger.info("...devices loaded")
 
 
-def mqtt_discovery_announce():
+def mqtt_create_discovery_cover(entity, device):
+    payload = OrderedDict()
+    entity_name = device["entities"][str(entity["entity_id"])]
+    payload["name"] = entity_name
+    payload["device_class"] = entity["device_class"]
+    payload["device"] = {
+        "name": device["name"],
+        "identifiers": [f"lora2mqtt_{device['name'].lower()}"],
+        "manufacturer": "Ove Nystås",
+        "model": "LoRaNodeGarage",
+        "via_device": "LoRa2MQTT",
+    }
+    payload[
+        "state_topic"
+    ] = f"{config['MQTT'].get('base_topic')}/{device['name'].lower()}/state"
+
+    return payload
+
+
+def mqtt_create_discovery_binary_sensor(entity, device):
+    payload = OrderedDict()
+    entity_name = device["entities"][str(entity["entity_id"])]
+    payload["name"] = entity_name
+    payload["device_class"] = entity["device_class"]
+    payload["device"] = {
+        "name": device["name"],
+        "identifiers": [f"lora2mqtt_{device['name'].lower()}"],
+        "manufacturer": "Ove Nystås",
+        "model": "LoRaNodeGarage",
+        "via_device": "LoRa2MQTT",
+    }
+    payload[
+        "state_topic"
+    ] = f"{config['MQTT'].get('base_topic')}/{device['name'].lower()}/state"
+
+    return payload
+
+
+def mqtt_create_discovery_sensor(entity, device):
+    payload = OrderedDict()
+    entity_name = device["entities"][str(entity["entity_id"])]
+    payload["name"] = entity_name
+    payload["device_class"] = entity["device_class"]
+    payload["device"] = {
+        "name": device["name"],
+        "identifiers": [f"lora2mqtt_{device['name'].lower()}"],
+        "manufacturer": "Ove Nystås",
+        "model": "LoRaNodeGarage",
+        "via_device": "LoRa2MQTT",
+    }
+    payload[
+        "state_topic"
+    ] = f"{config['MQTT'].get('base_topic')}/{device['name'].lower()}/state"
+    payload["unit_of_measurement"] = entity["unit"]
+    payload["value_template"] = f"{{{{ value_json.{entity_name.lower()} }}}}"
+
+    return payload
+
+
+def mqtt_discovery_announce_device(id: int, device):
     """
-    Discovery Announcement
+    Discovery Announcement of one device
     """
-    logger.info("Announcing LoRa devices to MQTT broker for auto-discovery ...")
-    # log.print("Announcing LoRa devices to MQTT broker for auto-discovery ...")
+    logger.info(
+        f"Announcing LoRa device {id}:{device['name']} to MQTT broker for auto-discovery ..."
+    )
 
-    base_topic = config["MQTT"].get("base_topic")
     discovery_prefix = config["MQTT"].get("discovery_prefix")
 
-    for node in devices["devices"]:
-        state_topic = f"{base_topic}/sensor/{node.nodeId}/state"
-        for [sensor, params] in parameters.items():
-            discovery_topic = (
-                f"{discovery_prefix}/sensor/{flora_name.lower()}/{sensor}/config"
-            )
-            payload = OrderedDict()
-            payload["name"] = f"{flora_name} {sensor.title()}"
-            payload["unit_of_measurement"] = params["unit"]
-            if "device_class" in params:
-                payload["device_class"] = params["device_class"]
-            payload["state_topic"] = state_topic
-            mqtt_client.publish(discovery_topic, json.dumps(payload), 1, True)
+    if id == 1:  # Only have discovery messages for id 1 now
+        for entity in discovery_msgs:
+            entity_name = device["entities"][str(entity["entity_id"])]
+            discovery_topic = f"{discovery_prefix}/{entity['component']}/{device['name'].lower()}/{entity_name.lower()}/config"
+
+            payload = None
+            if entity["component"] == "cover":
+                payload = mqtt_create_discovery_cover(entity, device)
+            elif entity["component"] == "binary_sensor":
+                payload = mqtt_create_discovery_binary_sensor(entity, device)
+            elif entity["component"] == "sensor":
+                payload = mqtt_create_discovery_sensor(entity, device)
+            else:
+                logger.warning(
+                    f"Discovery for {entity['component']} is not implemented."
+                )
+
+            if payload:
+                mqtt_client.publish(discovery_topic, json.dumps(payload), 1, True)
+                logger.info(f"Published entity {entity_name} to {discovery_topic}")
+            else:
+                logger.warning("No discovery payload to publish.")
+    else:
+        logger.warning(f"Device {id} has no discovery")
+
+
+def mqtt_discovery_announce_all():
+    """
+    Discovery Announcement of all devices
+    """
+    logger.info("Announcing All LoRa devices to MQTT broker for auto-discovery ...")
+
+    for id, device in devices.items():
+        mqtt_discovery_announce_device(int(id), device)
 
     logger.info("All LoRa devices announced to MQTT broker")
 
@@ -285,66 +299,160 @@ def on_lora_receive(payload):
     """
     Callback function that runs when a LoRa message is received
     """
-    print("From:", payload.header_from)
-    print("RSSI: {}; SNR: {}".format(payload.rssi, payload.snr))
-
+    logger.info(
+        f"LoRa msg from {payload.header_from}, RSSI={payload.rssi}, SNR={payload.snr}"
+    )
     lora_parse_msg(payload)
 
 
+def lora_load_discovery():
+    file_name = "discovery.json"
+    try:
+        with open(file_name) as f:
+            discovery_msgs.extend(json.load(f))
+    except FileNotFoundError as e:
+        logger.warning(f"Could not find file {file_name}, will create a new")
+    except json.decoder.JSONDecodeError as e:
+        logger.warning(
+            f"Failed to decode file {file_name}, perform a new discovery to recreate it"
+        )
+
+
 def lora_parse_msg(payload):
+    if str(payload.header_from) not in devices.keys():
+        logger.warn(f"LoRa msg from unknown device {payload.header_from}")
+        logger.debug(bytes.hex(payload.message, " "))
+        return
+
     MSG_TYPE_MASK = 0x0F
-    msg_type = payload.flags & MSG_TYPE_MASK
+    msg_type = payload.header_flags & MSG_TYPE_MASK
+    logger.info(f"msg_type: {msg_type}")
+
+    if msg_type == int(messages.MsgType.PING_REQ):
+        logger.info("Got a ping request")
+        lora_parse_ping_req(payload)
+    elif msg_type == int(messages.MsgType.PING_MSG):
+        logger.info("Got a ping message")
+        lora_parse_ping_msg(payload)
+    elif msg_type == int(messages.MsgType.DISCOVERY_REQ):
+        logger.info("Got a discovery request")
+        lora_parse_discovery_req(payload)
+    elif msg_type == int(messages.MsgType.DISCOVERY_MSG):
+        logger.info("Got a discovery message")
+        lora_parse_discovery_msg(payload)
+    elif msg_type == int(messages.MsgType.VALUE_REQ):
+        logger.info("Got a value request")
+        lora_parse_value_req(payload)
+    elif msg_type == int(messages.MsgType.VALUE_MSG):
+        logger.info("Got a value message")
+        lora_parse_value_msg(payload)
+    elif msg_type == int(messages.MsgType.CONFIG_REQ):
+        logger.info("Got a config request")
+        lora_parse_config_req(payload)
+    elif msg_type == int(messages.MsgType.CONFIG_MSG):
+        logger.info("Got a config message")
+        lora_parse_config_msg(payload)
+    elif msg_type == int(messages.MsgType.CONFIG_SET_REQ):
+        logger.info("Got a config set request")
+        lora_parse_config_set_req(payload)
+    elif msg_type == int(messages.MsgType.SERVICE_REQ):
+        logger.info("Got a service request")
+        lora_parse_servive_req(payload)
+    else:
+        logger.info(f"Got the unsupported message type {msg_type}")
 
 
-#   switch (msg_type) {
-#     case MsgType::ping_req:
-#       sendPing(rxMsg.header.src, rxMsg.rssi);
-#       break;
+def lora_parse_ping_req(payload):
+    logger.debug(bytes.hex(payload.message, " "))
 
-#     case MsgType::discovery_req:
-#       if (mOnDiscoveryReqMsgFunc) {
-#         uint8_t entityId = rxMsg.payload[0];
-#         mOnDiscoveryReqMsgFunc(entityId);
-#       }
-#       break;
 
-#     case MsgType::value_req:
-#       if (mOnValueReqMsgFunc) {
-#         uint8_t entityId = rxMsg.payload[0];
-#         mOnValueReqMsgFunc(entityId);
-#       }
-#       break;
+def lora_parse_ping_msg(payload):
+    logger.debug(bytes.hex(payload.message, " "))
+    msg_decoded = messages.PingMsg(payload.message)
+    logger.debug(jsonpickle.encode(msg_decoded, unpicklable=False))
 
-#     case MsgType::config_req:
-#       if (mOnConfigReqMsgFunc) {
-#         uint8_t entityId = rxMsg.payload[0];
-#         mOnConfigReqMsgFunc(entityId);
-#       }
-#       break;
 
-#     case MsgType::configSet_req:
-#       if (mOnConfigSetReqMsgFunc) {
-#         LoRaConfigValuePayloadT* payload =
-#             reinterpret_cast<LoRaConfigValuePayloadT*>(rxMsg.payload);
-#         mOnConfigSetReqMsgFunc(*payload);
-#       }
-#       break;
+def lora_parse_discovery_req(payload):
+    logger.debug(bytes.hex(payload.message, " "))
 
-#     case MsgType::service_req:
-#       if (mOnServiceReqMsgFunc) {
-#         if (rxMsg.header.len == sizeof(LoRaServiceItemT)) {
-#           LoRaServiceItemT* item =
-#               reinterpret_cast<LoRaServiceItemT*>(rxMsg.payload);
-#           mOnServiceReqMsgFunc(*item);
-#         }
-#       }
-#       break;
 
-#     default:
-#       return -1;
-#   }
-#   return 0;
-# }
+def lora_parse_discovery_msg(payload):
+    logger.debug(bytes.hex(payload.message, " "))
+    msg_decoded = messages.DiscoveryMsg(payload.message)
+    logger.debug(jsonpickle.encode(msg_decoded, unpicklable=False))
+    msg_decoded_json = jsonpickle.encode(msg_decoded, unpicklable=False)
+    msg_decoded_json_dict = json.loads(msg_decoded_json)
+
+    if msg_decoded_json_dict not in discovery_msgs:
+        logger.warning(f"Entity {msg_decoded.entity_id} not in discovery_msgs")
+        discovery_msgs.append(msg_decoded_json_dict)
+        with open("discovery.json", mode="w") as f:
+            f.write(jsonpickle.encode(discovery_msgs, unpicklable=False))
+
+
+def lora_parse_value_req(payload):
+    logger.debug(bytes.hex(payload.message, " "))
+
+
+def lora_parse_value_msg(payload):
+    logger.debug(bytes.hex(payload.message, " "))
+    msg_decoded = messages.ValueMsg(payload.message)
+    logger.debug(jsonpickle.encode(msg_decoded, unpicklable=False))
+
+    values = dict()
+    device = devices[str(payload.header_from)]
+    for value_item in msg_decoded.value_items:
+        found = False
+        for disc_item in discovery_msgs:
+            if disc_item["entity_id"] == value_item.entity_id:
+                found = True
+
+                if disc_item["signed"] and (value_item.value & 0x80000000):
+                    value_item.value = -0x100000000 + value_item.value
+                if disc_item["precision"] > 0:
+                    value_item.value /= 10 ** disc_item["precision"]
+
+                entity_name = device["entities"][str(value_item.entity_id)]
+                values[entity_name.lower()] = value_item.value
+
+        if not found:
+            logger.warning(
+                f"Could not find entity {value_item.entity_id} in discovery_msgs"
+            )
+
+    if values:
+        state_topic = (
+            f"{config['MQTT'].get('base_topic')}/{device['name'].lower()}/state"
+        )
+        logger.info(f"Publishing to {state_topic} ...")
+        msg_info = mqtt_client.publish(
+            state_topic, payload=json.dumps(values), qos=1, retain=False
+        )
+        msg_info.wait_for_publish(timeout=5)
+        if msg_info.rc == mqtt.MQTT_ERR_SUCCESS:
+            logger.info("...done")
+        elif msg_info.rc == mqtt.MQTT_ERR_NO_CONN:
+            logger.error("...no connection")
+        elif msg_info.rc == mqtt.MQTT_ERR_QUEUE_SIZE:
+            logger.error("...send queue is full")
+        else:
+            logger.error("...unknown error")
+
+
+def lora_parse_config_req(payload):
+    logger.debug(bytes.hex(payload.message, " "))
+
+
+def lora_parse_config_msg(payload):
+    logger.debug(bytes.hex(payload.message, " "))
+
+
+def lora_parse_config_set_req(payload):
+    logger.debug(bytes.hex(payload.message, " "))
+
+
+def lora_parse_servive_req(payload):
+    logger.debug(bytes.hex(payload.message, " "))
 
 
 def lora_init():
@@ -362,6 +470,7 @@ def lora_init():
         freq=868,
         tx_power=14,
         acks=True,
+        crypto=None,
     )
 
     lora.on_recv = on_lora_receive
@@ -376,9 +485,9 @@ def lora_send_hello():
     status = lora.send_to_wait(message, 10, retries=0)
 
     if status is True:
-        print("LoRa message sent!")
+        logger.info("LoRa Hello message sent!")
     else:
-        print("No ack from LoRa recipient")
+        logger.warning("No ack from LoRa recipient")
 
 
 def lora_send_ping(address):
@@ -387,36 +496,36 @@ def lora_send_ping(address):
     Valid address is 0-255 where 255 is broadcasted to all devices.
     """
     # TODO: Range check
-    message = b"\x01"  # Ping request ID
-    status = lora.send_to_wait(message, address)
+    # message = b"\x01\x02\x03\x04\x05\x06"  # Ping request ID
+    message_type = 0  # Ping request
+    status = lora.send_to_wait(b"", address, message_type)
     if status is True:
-        print("LoRa message sent!")
+        logger.info("LoRa Ping message sent!")
     else:
-        print("No ack from LoRa recipient")
+        logger.warn("No ack from LoRa recipient")
 
 
 def main():
+    jsonpickle.set_encoder_options("json", indent=2)
     parsed_args = parse_arguments()
-    colorama_init()
     print_intro()
 
     load_configuration(parsed_args.config)
     check_configuration()
 
-    reporting_mode = "homeassistant-mqtt"
+    load_devices(parsed_args.devices)
+
+    lora_load_discovery()
+    lora_init()
 
     mqtt_connect()
-    load_devices(parsed_args.devices)
-    mqtt_discovery_announce()
+    mqtt_discovery_announce_all()
 
-    lora_init()
-    lora_send_hello()
+    lora_send_ping(1)
 
-    print_line(
-        "Initialization complete, starting MQTT publish loop",
-        console=False,
-        sd_notify=True,
-    )
+    logger.info("Initialization complete, starting MQTT publish loop")
+
+    mqtt_client.loop_forever()
 
 
 if __name__ == "__main__":

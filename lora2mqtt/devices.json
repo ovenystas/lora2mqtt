@@ -1,23 +1,24 @@
 {
-  "devices": [
-    { "nodeId": 0, "name": "Lora2MQTT" },
-    {
-      "nodeId": 1,
-      "name": "Garagesensor",
-      "location": "Garage",
-      "entities": [
-        {
-          "component": "sensor",
-          "objectId": "temperature_air",
-          "config": {
-            "device_class": "temperature",
-            "unit_of_measurement": "°C",
-            "state_topic": "lora2mqtt/Garage/Garagesensor/temperature_air",
-            "name": "Garage-Garagesensor_temperature_air"
-          }
-        }
-      ]
-    },
-    { "nodeId": 2, "name": "Garage-Brevlada" }
-  ]
+  "0": {
+    "name": "LoRa2MQTT",
+    "location": "Tvattstuga",
+    "entities": null
+  },
+  "1": {
+    "name": "GarageSensor",
+    "location": "Garage",
+    "entities": {
+      "0": "Port",
+      "1": "Temperature",
+      "2": "Humidity",
+      "3": "Distance",
+      "4": "Height",
+      "5": "CarPresence"
+    }
+  },
+  "2": {
+    "name": "MailBox",
+    "location": "Utomhus",
+    "entities": null
+  }
 }
