@@ -1,5 +1,6 @@
 from enum import IntEnum
 import struct
+import json
 
 
 class Cover:
@@ -17,6 +18,8 @@ class Cover:
         "shutter",
         "window",
     )
+
+    state = ("closed", "open", "opening", "closing")
 
 
 class BinarySensor:
@@ -132,39 +135,134 @@ class PingMsg:
     def __init__(self, msg: bytes) -> None:
         self.rssi = struct.unpack("!Bb", msg)[1]
 
+    def to_json(self):
+        return json.dumps(self, default=lambda self: self.__dict__)
+
 
 class ConfigItem:
-    def __init__(self, msg: bytes) -> None:
-        self.id = msg[0]
-        self.unit = Unit.name[msg[1]]
-        self.signed = (msg[2] & 0x10) != 0
-        self.size = Size.value[(msg[2] & 0x0C) >> 2]
-        self.precision = int(msg[2] & 0x03)
+    def __init__(
+        self, id: int, unit: str, signed: bool, size: int, precision: int
+    ) -> None:
+        self.id = id
+        self.unit = unit
+        self.signed = signed
+        self.size = size
+        self.precision = precision
+
+    @classmethod
+    def from_bytes(cls, msg: bytes) -> None:
+        id = msg[0]
+        unit = Unit.name[msg[1]]
+        signed = (msg[2] & 0x10) != 0
+        size = Size.value[(msg[2] & 0x0C) >> 2]
+        precision = int(msg[2] & 0x03)
+        return cls(id, unit, signed, size, precision)
+
+    @classmethod
+    def from_dict(cls, msg: dict):
+        return cls(msg["id"], msg["unit"], msg["signed"], msg["size"], msg["precision"])
+
+    def to_json(self):
+        return json.dumps(self, default=lambda self: self.__dict__)
+
+    def __eq__(self, other) -> bool:
+        if isinstance(other, ConfigItem):
+            return (
+                self.id == other.id
+                and self.unit == other.unit
+                and self.signed == other.signed
+                and self.size == other.size
+                and self.precision == other.precision
+            )
+        return False
 
 
 class DiscoveryMsg:
-    def __init__(self, msg: bytes) -> None:
-        self.entity_id = msg[1]
-        self.component = Component.name[msg[2]]
-        if self.component == Component.name[0]:
-            self.device_class = BinarySensor.deviceClassName[msg[3]]
-        elif self.component == Component.name[1]:
-            self.device_class = Sensor.deviceClassName[msg[3]]
-        elif self.component == Component.name[2]:
-            self.device_class = Cover.deviceClassName[msg[3]]
+    def __init__(
+        self,
+        entity_id: int,
+        component: str,
+        device_class: str,
+        unit: str,
+        signed: bool,
+        size: int,
+        precision: int,
+        config_items: list,
+    ):
+        self.entity_id = entity_id
+        self.component = component
+        self.device_class = device_class
+        self.unit = unit
+        self.signed = signed
+        self.size = size
+        self.precision = precision
+        self.config_items = config_items
+
+    @classmethod
+    def from_bytes(cls, msg: bytes):
+        entity_id = msg[1]
+        component = Component.name[msg[2]]
+        if component == Component.name[0]:
+            device_class = BinarySensor.deviceClassName[msg[3]]
+        elif component == Component.name[1]:
+            device_class = Sensor.deviceClassName[msg[3]]
+        elif component == Component.name[2]:
+            device_class = Cover.deviceClassName[msg[3]]
         else:
-            self.device_class = None
-        self.unit = Unit.name[msg[4]]
-        self.signed = (msg[5] & 0x10) != 0
-        self.size = Size.value[(msg[5] & 0x0C) >> 2]
-        self.precision = int(msg[5] & 0x03)
+            device_class = None
+        unit = Unit.name[msg[4]]
+        signed = (msg[5] & 0x10) != 0
+        size = Size.value[(msg[5] & 0x0C) >> 2]
+        precision = int(msg[5] & 0x03)
         num_cfg_items = msg[6]
         if num_cfg_items > 0:
-            self.config_items = list()
+            config_items = list()
             offset = 7
             for i in range(num_cfg_items):
-                self.config_items.append(ConfigItem(msg[offset : offset + 3]))
+                config_items.append(ConfigItem.from_bytes(msg[offset : offset + 3]))
                 offset += 3
+
+        return cls(
+            entity_id,
+            component,
+            device_class,
+            unit,
+            signed,
+            size,
+            precision,
+            config_items,
+        )
+
+    @classmethod
+    def from_dict(cls, msg: dict):
+        return cls(
+            msg["entity_id"],
+            msg["component"],
+            msg["device_class"],
+            msg["unit"],
+            msg["signed"],
+            msg["size"],
+            msg["precision"],
+            msg["config_items"],
+        )
+
+    def to_json(self):
+        return json.dumps(self, default=lambda self: self.__dict__)
+
+    def __eq__(self, other):
+        if isinstance(other, DiscoveryMsg):
+            return (
+                self.entity_id == other.entity_id
+                and self.component == other.component
+                and self.device_class == other.device_class
+                and self.unit == other.unit
+                and self.signed == other.signed
+                and self.size == other.size
+                and self.precision == other.precision
+                #   and
+                # self.config_items == other.config_items
+            )
+        return False
 
 
 class ValueItem:
